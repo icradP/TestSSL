@@ -65,6 +65,7 @@ int main(int argc, char **argv)
   {
     ERR_print_errors_fp(stdout);
     exit(1);
+    
   }
  
   /* 创建一个 socket 用于 tcp 通信 */
