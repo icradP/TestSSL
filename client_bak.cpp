@@ -14,11 +14,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
  
-#define IP "172.22.14.157"
+#define IP "127.0.0.1"
 #define PORT 4433
-#define CERT_PATH "./CA/sslclientcert.pem"
-#define KEY_PATH  "./CA/sslclientkey.pem"
-#define CAFILE "./CA//demoCA/cacert.pem"
+#define CERT_PATH "./CA/misc/sslclientcert.pem"
+#define KEY_PATH  "./CA/misc/sslclientkey.pem"
+#define CAFILE "./CA/misc/demoCA/cacert.pem"
 static SSL_CTX *g_sslctx = NULL;
  
  
