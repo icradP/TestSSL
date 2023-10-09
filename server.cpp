@@ -1,158 +1,191 @@
-/*File:client.c
- *Auth:sjin
- *Date：2014-03-11
- *
+
+/*File:server.c
+ *Auth:icrad
+ *Date：2023-10-7
  */
- 
- 
-#include <stdio.h>
-#include <string.h>
-#include <errno.h>
-#include <sys/socket.h>
-#include <resolv.h>
-#include <stdlib.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
+#include <errno.h>
 #include <fcntl.h>
-#include <openssl/ssl.h>
+#include <netinet/in.h>
 #include <openssl/err.h>
- 
+#include <openssl/ssl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #define MAXBUF 1024
- 
-void ShowCerts(SSL * ssl)
-{
-  X509 *cert;
-  char *line;
- 
-  cert = SSL_get_peer_certificate(ssl);
-  if (cert != NULL) {
-    printf("Digital certificate information:\n");
-    line = X509_NAME_oneline(X509_get_subject_name(cert), 0, 0);
-    printf("Certificate: %s\n", line);
-    free(line);
-    line = X509_NAME_oneline(X509_get_issuer_name(cert), 0, 0);
-    printf("Issuer: %s\n", line);
-    free(line);
-    X509_free(cert);
-  }
-  else
-    printf("No certificate information！\n");
-}
- 
-int main(int argc, char **argv)
-{
-  int i,j,sockfd, len, fd, size;
-  char fileName[50],sendFN[20];
-  struct sockaddr_in dest;
-  char buffer[MAXBUF + 1];
+
+int main(int argc, char **argv) {
+  int sockfd, new_fd, fd;
+  socklen_t len;
+  struct sockaddr_in my_addr, their_addr;
+  unsigned int myport, lisnum;
+  char buf[MAXBUF + 1];
+  char new_fileName[50] = "/newfile/";
   SSL_CTX *ctx;
-  SSL *ssl;
- 
-  if (argc != 3)
-  {
-    printf("Parameter format error! Correct usage is as follows：\n\t\t%s IP Port\n\tSuch as:\t%s 127.0.0.1 80\n", argv[0], argv[0]); exit(0);
+  mode_t mode;
+  char pwd[100];
+  char *temp;
+
+  /* 在根目录下创建一个newfile文件夹 */
+  mkdir("/newfile", mode);
+
+  if (argv[1])
+    myport = atoi(argv[1]);
+  else {
+    myport = 8001;
+    argv[2] = argv[3] = NULL;
   }
- 
+
+  if (argv[2])
+    lisnum = atoi(argv[2]);
+  else {
+    lisnum = 2;
+    argv[3] = NULL;
+  }
+
   /* SSL 库初始化 */
   SSL_library_init();
+  /* 载入所有 SSL 算法 */
   OpenSSL_add_all_algorithms();
+  /* 载入所有 SSL 错误消息 */
   SSL_load_error_strings();
-  ctx = SSL_CTX_new(SSLv23_client_method());
-  if (ctx == NULL)
-  {
+  /* 以 SSL V2 和 V3 标准兼容方式产生一个 SSL_CTX ，即 SSL Content Text */
+  ctx = SSL_CTX_new(SSLv23_server_method());
+  /* 也可以用 SSLv2_server_method() 或 SSLv3_server_method() 单独表示 V2 或
+   * V3标准 */
+  if (ctx == NULL) {
     ERR_print_errors_fp(stdout);
     exit(1);
   }
- 
-  /* 创建一个 socket 用于 tcp 通信 */
-  if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-  {
-    perror("Socket");
-    exit(errno);
-  }
-  printf("socket created\n");
- 
-  /* 初始化服务器端（对方）的地址和端口信息 */
-  bzero(&dest, sizeof(dest));
-  dest.sin_family = AF_INET;
-  dest.sin_port = htons(atoi(argv[2]));
-  if (inet_aton(argv[1], (struct in_addr *) &dest.sin_addr.s_addr) == 0)
-  {
-    perror(argv[1]);
-    exit(errno);
-  }
-  printf("address created\n");
- 
-  /* 连接服务器 */
-  if (connect(sockfd, (struct sockaddr *) &dest, sizeof(dest)) != 0)
-  {
-    perror("Connect ");
-    exit(errno);
-  }
-  printf("server connected\n\n");
- 
-  /* 基于 ctx 产生一个新的 SSL */
-  ssl = SSL_new(ctx);
-  SSL_set_fd(ssl, sockfd);
-  /* 建立 SSL 连接 */
-  if (SSL_connect(ssl) == -1)
-    ERR_print_errors_fp(stderr);
-  else
-  {
-    printf("Connected with %s encryption\n", SSL_get_cipher(ssl));
-    ShowCerts(ssl);
-  }
- 
-  /* 接收用户输入的文件名，并打开文件 */
-  printf("\nPlease input the filename of you want to load :\n>");
-  scanf("%s",fileName);
-  if((fd = open(fileName,O_RDONLY,0666))<0)
-  {
-    perror("open:");
+  /* 载入用户的数字证书， 此证书用来发送给客户端。 证书里包含有公钥 */
+  getcwd(pwd, 100);
+  if (strlen(pwd) == 1)
+    pwd[0] = '\0';
+  if (SSL_CTX_use_certificate_file(ctx, "./misc/sslservercert.pem",
+                                   SSL_FILETYPE_PEM) <= 0) {
+    ERR_print_errors_fp(stdout);
     exit(1);
   }
-    
-  /* 将用户输入的文件名，去掉路径信息后，发给服务器 */
-  for(i=0;i<=strlen(fileName);i++)
-  {
-    if(fileName[i]=='/')
-    {
-      j=0;
-      continue;
-    }
-    else {sendFN[j]=fileName[i];++j;}
+  /* 载入用户私钥 */
+  getcwd(pwd, 100);
+  if (strlen(pwd) == 1)
+    pwd[0] = '\0';
+  if (SSL_CTX_use_PrivateKey_file(ctx, "./misc/sslserverkey.pem",
+                                  SSL_FILETYPE_PEM) <= 0) {
+    ERR_print_errors_fp(stdout);
+    exit(1);
   }
-  len = SSL_write(ssl, sendFN, strlen(sendFN));
-  if (len < 0)
-    printf("'%s'message Send failure ！Error code is %d，Error messages are '%s'\n", buffer, errno, strerror(errno));
- 
-  /* 循环发送文件内容到服务器 */
-  bzero(buffer, MAXBUF + 1); 
-  while((size=read(fd,buffer,1024)))
-  {
-    if(size<0)
-    {
-      perror("read:");
+  /* 检查用户私钥是否正确 */
+  if (!SSL_CTX_check_private_key(ctx)) {
+    ERR_print_errors_fp(stdout);
+    exit(1);
+  }
+
+  /* 开启一个 socket 监听 */
+  if ((sockfd = socket(PF_INET, SOCK_STREAM, 0)) == -1) {
+    perror("socket");
+    exit(1);
+  } else
+    printf("socket created\n");
+
+  bzero(&my_addr, sizeof(my_addr));
+  my_addr.sin_family = PF_INET;
+  my_addr.sin_port = htons(myport);
+  if (argv[3])
+    my_addr.sin_addr.s_addr = inet_addr(argv[3]);
+  else
+    my_addr.sin_addr.s_addr = INADDR_ANY;
+
+  if (bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr)) ==
+      -1) {
+    perror("bind");
+    exit(1);
+  } else
+    printf("binded\n");
+
+  if (listen(sockfd, lisnum) == -1) {
+    perror("listen");
+    exit(1);
+  } else
+    printf("begin listen\n");
+
+  while (1) {
+    SSL *ssl;
+    len = sizeof(struct sockaddr);
+    /* 等待客户端连上来 */
+    if ((new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &len)) == -1) {
+      perror("accept");
+      exit(errno);
+    } else
+      printf("server: got connection from %s, port %d, socket %d\n",
+             inet_ntoa(their_addr.sin_addr), ntohs(their_addr.sin_port),
+             new_fd);
+
+    /* 基于 ctx 产生一个新的 SSL */
+    ssl = SSL_new(ctx);
+    /* 将连接用户的 socket 加入到 SSL */
+    SSL_set_fd(ssl, new_fd);
+    /* 建立 SSL 连接 */
+    if (SSL_accept(ssl) == -1) {
+      perror("accept");
+      close(new_fd);
+      break;
+    }
+
+    /* 接受客户端所传文件的文件名并在特定目录创建空文件 */
+    bzero(buf, MAXBUF + 1);
+    bzero(new_fileName + 9, 42);
+    len = SSL_read(ssl, buf, MAXBUF);
+    if (len == 0)
+      printf("Receive Complete !\n");
+    else if (len < 0)
+      printf("Failure to receive message ! Error code is %d，Error messages "
+             "are '%s'\n",
+             errno, strerror(errno));
+    if ((fd = open(strcat(new_fileName, buf), O_CREAT | O_TRUNC | O_RDWR,
+                   0666)) < 0) {
+      perror("open:");
       exit(1);
     }
-    else
-    {
-      len = SSL_write(ssl, buffer, size);
-      if (len < 0)
-        printf("'%s'message Send failure ！Error code is %d，Error messages are '%s'\n", buffer, errno, strerror(errno));
+
+    /* 接收客户端的数据并写入文件 */
+    while (1) {
+      bzero(buf, MAXBUF + 1);
+      len = SSL_read(ssl, buf, MAXBUF);
+      if (len == 0) {
+        printf("Receive Complete !\n");
+        break;
+      } else if (len < 0) {
+        printf("Failure to receive message ! Error code is %d，Error messages "
+               "are '%s'\n",
+               errno, strerror(errno));
+        exit(1);
+      }
+      if (write(fd, buf, len) < 0) {
+        perror("write:");
+        exit(1);
+      }
     }
-    bzero(buffer, MAXBUF + 1);
+
+    /* 关闭文件 */
+    close(fd);
+    /* 关闭 SSL 连接 */
+    SSL_shutdown(ssl);
+    /* 释放 SSL */
+    SSL_free(ssl);
+    /* 关闭 socket */
+    close(new_fd);
   }
-  printf("Send complete !\n");
- 
-  /* 关闭连接 */
-  close(fd);
-  SSL_shutdown(ssl);
-  SSL_free(ssl);
+
+  /* 关闭监听的 socket */
   close(sockfd);
+  /* 释放 CTX */
   SSL_CTX_free(ctx);
   return 0;
 }
